@@ -91,8 +91,8 @@ with tab_visualizacao:
         tipos_disponiveis = ["TODOS"] + db.get_distinct_values("tipo")
         filtro_tipo = st.selectbox("Tipo", tipos_disponiveis)
         
-        projetos_disponiveis = ["TODOS"] + db.get_distinct_values("projeto")
-        filtro_projeto = st.selectbox("Projeto", projetos_disponiveis)
+        projetos_disponiveis = ["TODOS"] + db.get_distinct_values("Chamado/Projeto")
+        filtro_projeto = st.selectbox("Chamado/Projeto", projetos_disponiveis)
         
         campanhas_disponiveis = ["TODOS"] + db.get_distinct_values("campanha")
         filtro_campanha = st.selectbox("Campanha", campanhas_disponiveis)
@@ -167,7 +167,7 @@ with tab_cadastro:
         with c1:
             f_tipo = st.text_input("Tipo *", placeholder="Ex: Bug, Revisão, Schema, Relatório")
         with c2:
-            f_proj = st.text_input("Projeto *", placeholder="Ex: Sistema X")
+            f_proj = st.text_input("Chamado/Projeto *", placeholder="Ex: Sistema X")
         with c3:
             f_camp = st.text_input("Campanha *", placeholder="Ex: 2026-Q3")
 
