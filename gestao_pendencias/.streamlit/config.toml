@@ -9,3 +9,5 @@ font = "sans serif"
 headless = true
 enableCORS = false
 enableXsrfProtection = true
+[client]
+showErrorDetails = false  # Oculta detalhes do erro para o usuário final
