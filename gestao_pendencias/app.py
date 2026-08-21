@@ -55,7 +55,7 @@ if not check_password():
 # INTERFACE PRINCIPAL
 # ---------------------------------------------------------
 st.title("Painel de Controle de Pendências")
-st.caption("Classificação multidimensional e controle de prazos por tempo, projeto, campanha e tipo.")
+st.caption("Classificação multidimensional e controle de prazos por tempo, Chamado/Projeto, campanha e tipo.")
 
 # Indicadores Principais
 todos_dados = db.get_filtered_pendencias(status="TODOS")
