@@ -60,6 +60,49 @@ def verify_auth_token(token: str) -> tuple[bool, str | None]:
 # ---------------------------------------------------------
 # AUTENTICAÇÃO
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# GERENCIADOR DE COOKIES E TOKEN
+# ---------------------------------------------------------
+@st.cache_resource
+def get_cookie_manager():
+  return stx.CookieManager()
+
+
+cookie_manager = get_cookie_manager()
+
+
+def generate_auth_token(username: str, expiry_timestamp: int) -> str:
+  secret = st.secrets["auth"].get("cookie_secret", "fallback_secret").encode()
+  payload = f"{username}:{expiry_timestamp}".encode()
+  signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
+  return f"{username}:{expiry_timestamp}:{signature}"
+
+
+def verify_auth_token(token: str) -> tuple[bool, str | None]:
+  if not token or token.count(":") != 2:
+    return False, None
+  try:
+    username, exp_str, signature = token.split(":", 2)
+    exp_timestamp = int(exp_str)
+
+    if time.time() > exp_timestamp:
+      return False, None
+
+    users_dict = st.secrets.get("users", {})
+    if username not in users_dict:
+      return False, None
+
+    expected_token = generate_auth_token(username, exp_timestamp)
+    if hmac.compare_digest(token, expected_token):
+      return True, username
+    return False, None
+  except Exception:
+    return False, None
+
+
+# ---------------------------------------------------------
+# AUTENTICAÇÃO CORRIGIDA
+# ---------------------------------------------------------
 def check_password() -> bool:
   if (
       "auth" not in st.secrets
@@ -76,17 +119,29 @@ def check_password() -> bool:
     st.session_state.authenticated = False
     st.session_state.username = None
 
+  # 1. Se já autenticado na sessão ativa da memória
   if st.session_state.authenticated:
     return True
 
-  auth_token = cookie_manager.get("auth_session")
+  # 2. Leitura persistente de Cookies com tratamento de atraso
+  cookies = cookie_manager.get_all()
+
+  # Se o componente ainda está carregando no primeiro ciclo
+  if cookies is None:
+    # Renderiza um placeholder temporário para aguardar o handshake do cookie no navegador
+    time.sleep(0.1)
+    return False
+
+  auth_token = cookies.get("auth_session")
   if auth_token:
     is_valid, user_logged = verify_auth_token(auth_token)
     if is_valid:
       st.session_state.authenticated = True
       st.session_state.username = user_logged
+      st.rerun()
       return True
 
+  # 3. Formulário de Login
   col1, col2, col3 = st.columns([1, 2, 1])
   with col2:
     st.markdown("### Acesso ao Sistema")
@@ -110,24 +165,20 @@ def check_password() -> bool:
           if manter_conectado:
             exp_timestamp = int(time.time() + (30 * 86400))
             token = generate_auth_token(usuario_input, exp_timestamp)
+
+            # Grava o cookie e aguarda 0.6s para garantir a escrita antes do rerun
             cookie_manager.set(
                 "auth_session",
                 token,
                 expires_at=datetime.fromtimestamp(exp_timestamp),
+                key="set_auth_token",
             )
+            time.sleep(0.6)
+
           st.rerun()
         else:
           st.error("Usuário ou senha incorretos.")
   return False
-
-
-if not check_password():
-  st.stop()
-
-# Definição de Papéis (RBAC)
-is_admin = st.session_state.username == "admin"
-usuario_escopo = None if is_admin else st.session_state.username
-
 
 # ---------------------------------------------------------
 # GERADOR DE RELATÓRIO EXCEL
