@@ -191,3 +191,22 @@ def get_filtered_pendencias(
     cursor = conn.cursor()
     cursor.execute(query, params)
     return cursor.fetchall()
+
+def delete_pendencia(p_id: int, usuario: Optional[str] = None) -> bool:
+  """Exclui permanentemente o registro.
+
+  Se `usuario` for passado (usuário comum), garante que ele só possa apagar seus
+  próprios chamados.
+  """
+  query = "DELETE FROM pendencias WHERE id = ?"
+  params: List[Any] = [p_id]
+
+  if usuario:
+    query += " AND usuario = ?"
+    params.append(usuario.strip().lower())
+
+  with get_connection() as conn:
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    conn.commit()
+    return cursor.rowcount > 0

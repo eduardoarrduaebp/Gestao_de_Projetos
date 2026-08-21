@@ -176,7 +176,7 @@ def gerar_excel_bytes(dados: list, titulo_aba: str) -> bytes:
 # ---------------------------------------------------------
 # MODAL DE EDIÇÃO
 # ---------------------------------------------------------
-@st.dialog("Editar Pendência")
+@st.dialog("Gerenciar Pendência")
 def modal_editar_pendencia(registro):
   (
       p_id,
@@ -194,6 +194,7 @@ def modal_editar_pendencia(registro):
   dt_abertura_obj = datetime.strptime(p_abertura, "%Y-%m-%d").date()
 
   with st.form(f"form_edit_{p_id}"):
+    st.subheader("Editar Dados")
     e_titulo = st.text_input("Título *", value=p_tit)
     e_desc = st.text_area("Descrição", value=p_desc or "")
 
@@ -207,14 +208,9 @@ def modal_editar_pendencia(registro):
 
     e_data_abertura = st.date_input("Data de Abertura *", value=dt_abertura_obj)
 
-    col_btn1, col_btn2 = st.columns(2)
-    with col_btn1:
-      salvar = st.form_submit_button(
-          "Salvar Alterações", use_container_width=True
-      )
-    with col_btn2:
-      cancelar = st.form_submit_button("Cancelar", use_container_width=True)
-
+    salvar = st.form_submit_button(
+        "Salvar Alterações", use_container_width=True
+    )
     if salvar:
       if not e_titulo or not e_tipo or not e_proj or not e_camp:
         st.error("Campos com (*) são obrigatórios.")
@@ -230,6 +226,31 @@ def modal_editar_pendencia(registro):
         )
         st.success("Registro atualizado com sucesso!")
         st.rerun()
+
+  st.markdown("---")
+
+  # Zona de Exclusão com confirmação explícita
+  with st.expander("🗑️ Excluir Registro", expanded=False):
+    st.warning(
+        "Atenção: A exclusão é permanente e não poderá ser desfeita.", icon="⚠️"
+    )
+    confirmar = st.checkbox(
+        "Confirmo que desejo apagar este item.", key=f"chk_del_{p_id}"
+    )
+
+    if st.button(
+        "Excluir Definitivamente",
+        key=f"btn_delete_{p_id}",
+        disabled=not confirmar,
+        type="primary",
+        use_container_width=True,
+    ):
+      removido = db.delete_pendencia(p_id, usuario=usuario_escopo)
+      if removido:
+        st.success(f"Pendência #{p_id} excluída com sucesso.")
+        st.rerun()
+      else:
+        st.error("Falha ao excluir: permissão negada ou registro não localizado.")
 
 
 # ---------------------------------------------------------
