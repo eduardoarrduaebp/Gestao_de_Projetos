@@ -29,7 +29,6 @@ cookie_manager = get_cookie_manager()
 
 
 def generate_auth_token(username: str, expiry_timestamp: int) -> str:
-  """Gera token estruturado: <username>:<timestamp_expiracao>:<assinatura_hmac>"""
   secret = st.secrets["auth"].get("cookie_secret", "").encode()
   payload = f"{username}:{expiry_timestamp}".encode()
   signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
@@ -37,7 +36,6 @@ def generate_auth_token(username: str, expiry_timestamp: int) -> str:
 
 
 def verify_auth_token(token: str) -> tuple[bool, str | None]:
-  """Valida se o usuário existe, se o HMAC é legítimo e se não expirou."""
   if not token or token.count(":") != 2:
     return False, None
   try:
@@ -47,7 +45,6 @@ def verify_auth_token(token: str) -> tuple[bool, str | None]:
     if time.time() > exp_timestamp:
       return False, None
 
-    # Valida se o usuário ainda existe nas configurações
     users_dict = st.secrets.get("users", {})
     if username not in users_dict:
       return False, None
@@ -61,7 +58,7 @@ def verify_auth_token(token: str) -> tuple[bool, str | None]:
 
 
 # ---------------------------------------------------------
-# AUTENTICAÇÃO MULTIUSUÁRIO
+# AUTENTICAÇÃO
 # ---------------------------------------------------------
 def check_password() -> bool:
   if (
@@ -70,8 +67,8 @@ def check_password() -> bool:
       or "cookie_secret" not in st.secrets["auth"]
   ):
     st.error(
-        "Configuração de segurança ausente: defina [auth.cookie_secret] e"
-        " [users] em .streamlit/secrets.toml"
+        "Configuração ausente: defina [auth.cookie_secret] e [users] em"
+        " .streamlit/secrets.toml"
     )
     st.stop()
 
@@ -79,11 +76,9 @@ def check_password() -> bool:
     st.session_state.authenticated = False
     st.session_state.username = None
 
-  # 1. Validação via Session State
   if st.session_state.authenticated:
     return True
 
-  # 2. Validação via Cookie Persistente
   auth_token = cookie_manager.get("auth_session")
   if auth_token:
     is_valid, user_logged = verify_auth_token(auth_token)
@@ -92,11 +87,10 @@ def check_password() -> bool:
       st.session_state.username = user_logged
       return True
 
-  # 3. Formulário de Login
   col1, col2, col3 = st.columns([1, 2, 1])
   with col2:
     st.markdown("### Acesso ao Sistema")
-    st.caption("Insira suas credenciais individuais para prosseguir.")
+    st.caption("Insira suas credenciais para gerenciar suas pendências.")
     with st.form("form_login"):
       usuario_input = st.text_input("Usuário:").strip().lower()
       senha_input = st.text_input("Senha:", type="password")
@@ -130,6 +124,10 @@ def check_password() -> bool:
 if not check_password():
   st.stop()
 
+# Definição de Papéis (RBAC)
+is_admin = st.session_state.username == "admin"
+usuario_escopo = None if is_admin else st.session_state.username
+
 
 # ---------------------------------------------------------
 # GERADOR DE RELATÓRIO EXCEL
@@ -146,9 +144,9 @@ def gerar_excel_bytes(dados: list, titulo_aba: str) -> bytes:
       "Status",
       "Data de Registro",
       "Data de Conclusão",
+      "Criado por",
   ]
   df = pd.DataFrame(dados, columns=colunas)
-
   hoje_calc = date.today()
 
   def calcular_duracao(row):
@@ -191,6 +189,7 @@ def modal_editar_pendencia(registro):
       p_status,
       p_criacao,
       p_conclusao,
+      p_autor,
   ) = registro
   dt_abertura_obj = datetime.strptime(p_abertura, "%Y-%m-%d").date()
 
@@ -234,23 +233,28 @@ def modal_editar_pendencia(registro):
 
 
 # ---------------------------------------------------------
-# INTERFACE PRINCIPAL
+# INTERFACE PRINCIPAL E MÉTRICAS
 # ---------------------------------------------------------
 st.title("Painel de Controle de Pendências")
 st.caption(
-    "Controle operacional, rastreamento de prazos e métricas de chamados."
+    "Visão Geral Administrativa"
+    if is_admin
+    else f"Painel de Chamados Pessoais — {st.session_state.username}"
 )
 
-todos_dados = db.get_filtered_pendencias(status="TODOS")
+# Métricas calculadas estritamente sob o escopo do usuário
+dados_escopo = db.get_filtered_pendencias(
+    status="TODOS", usuario=usuario_escopo
+)
 hoje = date.today()
 
-total_abertas = sum(1 for p in todos_dados if p[7] == "PENDENTE")
-total_concluidas = sum(1 for p in todos_dados if p[7] == "CONCLUIDO")
+total_abertas = sum(1 for p in dados_escopo if p[7] == "PENDENTE")
+total_concluidas = sum(1 for p in dados_escopo if p[7] == "CONCLUIDO")
 
 col_m1, col_m2, col_m3 = st.columns(3)
 col_m1.metric("Pendências em Aberto", total_abertas)
 col_m2.metric("Concluídas", total_concluidas)
-col_m3.metric("Total Geral", len(todos_dados))
+col_m3.metric("Total no Escopo", len(dados_escopo))
 
 st.markdown("---")
 
@@ -264,31 +268,51 @@ tab_visualizacao, tab_cadastro, tab_relatorios = st.tabs(
 # ---------------------------------------------------------
 with tab_visualizacao:
   with st.sidebar:
-    st.markdown(f"👤 Conectado como: **{st.session_state.username}**")
+    st.markdown(
+        f"👤 Usuário: **{st.session_state.username}**"
+        f" ({'Administrador' if is_admin else 'Colaborador'})"
+    )
     st.header("Filtros de Classificação")
 
     filtro_status = st.selectbox(
         "Status", ["PENDENTE", "CONCLUIDO", "TODOS"], index=0
     )
     filtro_tipo = st.selectbox(
-        "Tipo", ["TODOS"] + db.get_distinct_values("tipo")
+        "Tipo",
+        ["TODOS"] + db.get_distinct_values("tipo", usuario=usuario_escopo),
     )
     filtro_projeto = st.selectbox(
-        "Chamado/Projeto", ["TODOS"] + db.get_distinct_values("projeto")
+        "Chamado/Projeto",
+        ["TODOS"] + db.get_distinct_values("projeto", usuario=usuario_escopo),
     )
     filtro_campanha = st.selectbox(
-        "Campanha", ["TODOS"] + db.get_distinct_values("campanha")
+        "Campanha",
+        ["TODOS"] + db.get_distinct_values("campanha", usuario=usuario_escopo),
     )
+
+    # Filtro exclusivo para o perfil Admin
+    if is_admin:
+      usuarios_disponiveis = ["TODOS"] + db.get_distinct_values("usuario")
+      filtro_usuario_admin = st.selectbox(
+          "Filtrar por Usuário", usuarios_disponiveis
+      )
+      usuario_consulta = (
+          None
+          if filtro_usuario_admin == "TODOS"
+          else filtro_usuario_admin.lower()
+      )
+    else:
+      usuario_consulta = usuario_escopo
+
     filtro_busca = st.text_input("Buscar por título/descrição")
 
-  st.markdown("---")
-  if st.button("Encerrar Sessão", use_container_width=True):
+    st.markdown("---")
+    if st.button("Encerrar Sessão", use_container_width=True):
       try:
-          if cookie_manager.get("auth_session") is not None:
-              cookie_manager.delete("auth_session", key="logout_cookie_del")
+        if cookie_manager.get("auth_session") is not None:
+          cookie_manager.delete("auth_session", key="logout_cookie_del")
       except Exception:
-          pass
-
+        pass
       st.session_state.authenticated = False
       st.session_state.username = None
       st.rerun()
@@ -299,6 +323,7 @@ with tab_visualizacao:
       projeto=filtro_projeto,
       campanha=filtro_campanha,
       busca=filtro_busca,
+      usuario=usuario_consulta,
   )
 
   if not registros:
@@ -316,6 +341,7 @@ with tab_visualizacao:
           p_status,
           p_criacao,
           p_conclusao,
+          p_autor,
       ) = reg
       data_abertura = datetime.strptime(p_abertura, "%Y-%m-%d").date()
 
@@ -360,6 +386,8 @@ with tab_visualizacao:
           st.markdown(f"**{prefixo}#{p_id} {p_tit}**")
           if p_desc:
             st.caption(p_desc)
+          if is_admin:
+            st.caption(f"👤 *Autor:* `{p_autor}`")
 
         with c_tags:
           st.markdown(f"`{p_proj}` | `{p_camp}`")
@@ -424,6 +452,7 @@ with tab_cadastro:
             projeto=f_proj,
             campanha=f_camp,
             data_abertura=str(f_data_abertura),
+            usuario=st.session_state.username,
         )
         st.success(f"Pendência '{f_titulo}' cadastrada com sucesso.")
         st.rerun()
@@ -435,8 +464,8 @@ with tab_cadastro:
 with tab_relatorios:
   st.subheader("Exportação de Dados em Excel (.xlsx)")
   st.caption(
-      "Selecione o escopo desejado para compilar a planilha com cálculo"
-      " automático de dias decorridos."
+      "O relatório exportará exclusivamente os registros autorizados para seu"
+      " perfil."
   )
 
   escopo_exportacao = st.radio(
@@ -449,7 +478,6 @@ with tab_relatorios:
       horizontal=True,
   )
 
-  # Mapeamento do filtro para consulta no banco
   filtro_status_map = {
       "Todas as Pendências": "TODOS",
       "Apenas Pendentes (Em Aberto)": "PENDENTE",
@@ -457,15 +485,15 @@ with tab_relatorios:
   }
 
   status_selecionado = filtro_status_map[escopo_exportacao]
-  dados_exportar = db.get_filtered_pendencias(status=status_selecionado)
+  dados_exportar = db.get_filtered_pendencias(
+      status=status_selecionado, usuario=usuario_escopo
+  )
 
-  st.write(f"Total de registros encontrados: **{len(dados_exportar)}**")
+  st.write(f"Total de registros a exportar: **{len(dados_exportar)}**")
 
   if dados_exportar:
     excel_bin = gerar_excel_bytes(dados_exportar, escopo_exportacao)
-    nome_arquivo = (
-        f"relatorio_pendencias_{status_selecionado.lower()}_{hoje.isoformat()}.xlsx"
-    )
+    nome_arquivo = f"relatorio_pendencias_{st.session_state.username}_{status_selecionado.lower()}_{hoje.isoformat()}.xlsx"
 
     st.download_button(
         label=f"📥 Baixar Arquivo Excel ({escopo_exportacao})",

@@ -10,7 +10,7 @@ def get_connection():
 
 
 def init_db():
-  """Inicializa o banco de dados e aplica migrações de colunas se necessário."""
+  """Inicializa a tabela e aplica migração de coluna para bases existentes."""
   with get_connection() as conn:
     cursor = conn.cursor()
     cursor.execute("""
@@ -24,9 +24,20 @@ def init_db():
                 data_abertura TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'PENDENTE',
                 data_criacao TEXT NOT NULL,
-                data_conclusao TEXT
+                data_conclusao TEXT,
+                usuario TEXT NOT NULL DEFAULT 'admin'
             )
         """)
+
+    # Migração defensiva: adiciona coluna 'usuario' caso o banco já existisse
+    cursor.execute("PRAGMA table_info(pendencias)")
+    colunas = [info[1] for info in cursor.fetchall()]
+    if "usuario" not in colunas:
+      cursor.execute(
+          "ALTER TABLE pendencias ADD COLUMN usuario TEXT NOT NULL DEFAULT"
+          " 'admin'"
+      )
+
     conn.commit()
 
 
@@ -37,6 +48,7 @@ def add_pendencia(
     projeto: str,
     campanha: str,
     data_abertura: str,
+    usuario: str,
 ) -> int:
   hoje_str = date.today().isoformat()
   with get_connection() as conn:
@@ -44,8 +56,8 @@ def add_pendencia(
     cursor.execute(
         """
             INSERT INTO pendencias (
-                titulo, descricao, tipo, projeto, campanha, data_abertura, status, data_criacao, data_conclusao
-            ) VALUES (?, ?, ?, ?, ?, ?, 'PENDENTE', ?, NULL)
+                titulo, descricao, tipo, projeto, campanha, data_abertura, status, data_criacao, data_conclusao, usuario
+            ) VALUES (?, ?, ?, ?, ?, ?, 'PENDENTE', ?, NULL, ?)
         """,
         (
             titulo.strip(),
@@ -55,6 +67,7 @@ def add_pendencia(
             campanha.strip(),
             data_abertura,
             hoje_str,
+            usuario.strip().lower(),
         ),
     )
     conn.commit()
@@ -70,7 +83,6 @@ def update_pendencia(
     campanha: str,
     data_abertura: str,
 ):
-  """Atualiza todos os dados de uma pendência existente."""
   with get_connection() as conn:
     cursor = conn.cursor()
     cursor.execute(
@@ -93,8 +105,9 @@ def update_pendencia(
 
 
 def update_status(p_id: int, novo_status: str):
-  """Atualiza o status e grava a data de conclusão quando finalizado."""
-  data_conclusao = date.today().isoformat() if novo_status == "CONCLUIDO" else None
+  data_conclusao = (
+      date.today().isoformat() if novo_status == "CONCLUIDO" else None
+  )
   with get_connection() as conn:
     cursor = conn.cursor()
     cursor.execute(
@@ -108,21 +121,27 @@ def update_status(p_id: int, novo_status: str):
     conn.commit()
 
 
-def get_distinct_values(coluna: str) -> List[str]:
-  colunas_permitidas = ["tipo", "projeto", "campanha", "status"]
+def get_distinct_values(
+    coluna: str, usuario: Optional[str] = None
+) -> List[str]:
+  colunas_permitidas = ["tipo", "projeto", "campanha", "status", "usuario"]
   if coluna not in colunas_permitidas:
     raise ValueError(
         f"Coluna '{coluna}' inválida para recuperação de valores distintos."
     )
 
+  query = f"SELECT DISTINCT {coluna} FROM pendencias WHERE {coluna} IS NOT NULL AND {coluna} != ''"
+  params: List[Any] = []
+
+  if usuario:
+    query += " AND usuario = ?"
+    params.append(usuario.strip().lower())
+
+  query += f" ORDER BY {coluna} ASC"
+
   with get_connection() as conn:
     cursor = conn.cursor()
-    cursor.execute(f"""
-            SELECT DISTINCT {coluna} 
-            FROM pendencias 
-            WHERE {coluna} IS NOT NULL AND {coluna} != ''
-            ORDER BY {coluna} ASC
-        """)
+    cursor.execute(query, params)
     return [row[0] for row in cursor.fetchall()]
 
 
@@ -132,13 +151,18 @@ def get_filtered_pendencias(
     projeto: str = "TODOS",
     campanha: str = "TODOS",
     busca: str = "",
+    usuario: Optional[str] = None,
 ) -> List[Tuple]:
   query = """
-        SELECT id, titulo, descricao, tipo, projeto, campanha, data_abertura, status, data_criacao, data_conclusao
+        SELECT id, titulo, descricao, tipo, projeto, campanha, data_abertura, status, data_criacao, data_conclusao, usuario
         FROM pendencias
         WHERE 1=1
     """
   params: List[Any] = []
+
+  if usuario:
+    query += " AND usuario = ?"
+    params.append(usuario.strip().lower())
 
   if status != "TODOS":
     query += " AND status = ?"
