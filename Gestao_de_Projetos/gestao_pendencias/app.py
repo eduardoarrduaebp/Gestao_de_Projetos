@@ -281,9 +281,14 @@ with tab_visualizacao:
     )
     filtro_busca = st.text_input("Buscar por título/descrição")
 
-    st.markdown("---")
-    if st.button("Encerrar Sessão", use_container_width=True):
-      cookie_manager.delete("auth_session")
+  st.markdown("---")
+  if st.button("Encerrar Sessão", use_container_width=True):
+      try:
+          if cookie_manager.get("auth_session") is not None:
+              cookie_manager.delete("auth_session", key="logout_cookie_del")
+      except Exception:
+          pass
+
       st.session_state.authenticated = False
       st.session_state.username = None
       st.rerun()
