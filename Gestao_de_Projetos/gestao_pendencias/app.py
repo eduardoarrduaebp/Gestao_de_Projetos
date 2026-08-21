@@ -21,12 +21,10 @@ db.init_db()
 # ---------------------------------------------------------
 # GERENCIADOR DE COOKIES E TOKEN MULTIUSUÁRIO
 # ---------------------------------------------------------
-@st.cache_resource
-def get_cookie_manager():
-  return stx.CookieManager()
-
-
-cookie_manager = get_cookie_manager()
+# ---------------------------------------------------------
+# GERENCIADOR DE COOKIES E TOKEN MULTIUSUÁRIO
+# ---------------------------------------------------------
+cookie_manager = stx.CookieManager(key="app_cookie_manager")
 
 
 def generate_auth_token(username: str, expiry_timestamp: int) -> str:
@@ -35,6 +33,29 @@ def generate_auth_token(username: str, expiry_timestamp: int) -> str:
   payload = f"{username}:{expiry_timestamp}".encode()
   signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
   return f"{username}:{expiry_timestamp}:{signature}"
+
+
+def verify_auth_token(token: str) -> tuple[bool, str | None]:
+  """Valida autenticidade do HMAC, integridade e prazo de expiração."""
+  if not token or token.count(":") != 2:
+    return False, None
+  try:
+    username, exp_str, signature = token.split(":", 2)
+    exp_timestamp = int(exp_str)
+
+    if time.time() > exp_timestamp:
+      return False, None
+
+    users_dict = st.secrets.get("users", {})
+    if username not in users_dict:
+      return False, None
+
+    expected_token = generate_auth_token(username, exp_timestamp)
+    if hmac.compare_digest(token, expected_token):
+      return True, username
+    return False, None
+  except Exception:
+    return False, None
 
 
 def verify_auth_token(token: str) -> tuple[bool, str | None]:
