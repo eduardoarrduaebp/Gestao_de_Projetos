@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import io
 import time
 from datetime import date, datetime
 import database as db
@@ -18,7 +19,7 @@ db.init_db()
 
 
 # ---------------------------------------------------------
-# GERENCIADOR DE COOKIES E SESSÃO
+# GERENCIADOR DE COOKIES E TOKEN MULTIUSUÁRIO
 # ---------------------------------------------------------
 def get_cookie_manager():
   return stx.CookieManager(key="auth_cookie_manager")
@@ -27,62 +28,94 @@ def get_cookie_manager():
 cookie_manager = get_cookie_manager()
 
 
-def generate_auth_token(expiry_timestamp: int) -> str:
-  secret = st.secrets["auth"].get(
-      "cookie_secret", st.secrets["auth"]["app_password"]
-  ).encode()
-  payload = f"{expiry_timestamp}".encode()
+def generate_auth_token(username: str, expiry_timestamp: int) -> str:
+  """Gera token estruturado: <username>:<timestamp_expiracao>:<assinatura_hmac>"""
+  secret = st.secrets["auth"].get("cookie_secret", "").encode()
+  payload = f"{username}:{expiry_timestamp}".encode()
   signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
-  return f"{expiry_timestamp}:{signature}"
+  return f"{username}:{expiry_timestamp}:{signature}"
 
 
-def verify_auth_token(token: str) -> bool:
-  if not token or ":" not in token:
-    return False
+def verify_auth_token(token: str) -> tuple[bool, str | None]:
+  """Valida se o usuário existe, se o HMAC é legítimo e se não expirou."""
+  if not token or token.count(":") != 2:
+    return False, None
   try:
-    exp_str, signature = token.split(":", 1)
+    username, exp_str, signature = token.split(":", 2)
     exp_timestamp = int(exp_str)
+
     if time.time() > exp_timestamp:
-      return False
-    expected_token = generate_auth_token(exp_timestamp)
-    return hmac.compare_digest(token, expected_token)
+      return False, None
+
+    # Valida se o usuário ainda existe nas configurações
+    users_dict = st.secrets.get("users", {})
+    if username not in users_dict:
+      return False, None
+
+    expected_token = generate_auth_token(username, exp_timestamp)
+    if hmac.compare_digest(token, expected_token):
+      return True, username
+    return False, None
   except Exception:
-    return False
+    return False, None
 
 
+# ---------------------------------------------------------
+# AUTENTICAÇÃO MULTIUSUÁRIO
+# ---------------------------------------------------------
 def check_password() -> bool:
-  if "auth" not in st.secrets or "app_password" not in st.secrets["auth"]:
-    st.error("Defina [auth.app_password] em .streamlit/secrets.toml")
+  if (
+      "auth" not in st.secrets
+      or "users" not in st.secrets
+      or "cookie_secret" not in st.secrets["auth"]
+  ):
+    st.error(
+        "Configuração de segurança ausente: defina [auth.cookie_secret] e"
+        " [users] em .streamlit/secrets.toml"
+    )
     st.stop()
 
   if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+    st.session_state.username = None
 
+  # 1. Validação via Session State
   if st.session_state.authenticated:
     return True
 
+  # 2. Validação via Cookie Persistente
   auth_token = cookie_manager.get("auth_session")
-  if auth_token and verify_auth_token(auth_token):
-    st.session_state.authenticated = True
-    return True
+  if auth_token:
+    is_valid, user_logged = verify_auth_token(auth_token)
+    if is_valid:
+      st.session_state.authenticated = True
+      st.session_state.username = user_logged
+      return True
 
+  # 3. Formulário de Login
   col1, col2, col3 = st.columns([1, 2, 1])
   with col2:
-    st.markdown("### Acesso Restrito")
-    st.caption(
-        "Insira a chave de acesso configurada para gerenciar as pendências."
-    )
+    st.markdown("### Acesso ao Sistema")
+    st.caption("Insira suas credenciais individuais para prosseguir.")
     with st.form("form_login"):
-      pwd = st.text_input("Chave de acesso:", type="password")
+      usuario_input = st.text_input("Usuário:").strip().lower()
+      senha_input = st.text_input("Senha:", type="password")
       manter_conectado = st.checkbox("Manter conectado (30 dias)")
       btn_entrar = st.form_submit_button("Entrar", use_container_width=True)
 
       if btn_entrar:
-        if hmac.compare_digest(pwd, st.secrets["auth"]["app_password"]):
+        users = st.secrets.get("users", {})
+        if (
+            usuario_input in users
+            and isinstance(users[usuario_input], str)
+            and hmac.compare_digest(senha_input, users[usuario_input])
+        ):
           st.session_state.authenticated = True
+          st.session_state.username = usuario_input
+
           if manter_conectado:
             exp_timestamp = int(time.time() + (30 * 86400))
-            token = generate_auth_token(exp_timestamp)
+            token = generate_auth_token(usuario_input, exp_timestamp)
             cookie_manager.set(
                 "auth_session",
                 token,
@@ -90,7 +123,7 @@ def check_password() -> bool:
             )
           st.rerun()
         else:
-          st.error("Chave de acesso incorreta.")
+          st.error("Usuário ou senha incorretos.")
   return False
 
 
@@ -99,7 +132,51 @@ if not check_password():
 
 
 # ---------------------------------------------------------
-# FUNÇÃO DE DIALOG/MODAL PARA EDIÇÃO
+# GERADOR DE RELATÓRIO EXCEL
+# ---------------------------------------------------------
+def gerar_excel_bytes(dados: list, titulo_aba: str) -> bytes:
+  colunas = [
+      "ID",
+      "Título",
+      "Descrição",
+      "Tipo",
+      "Chamado/Projeto",
+      "Campanha",
+      "Data de Abertura",
+      "Status",
+      "Data de Registro",
+      "Data de Conclusão",
+  ]
+  df = pd.DataFrame(dados, columns=colunas)
+
+  hoje_calc = date.today()
+
+  def calcular_duracao(row):
+    try:
+      dt_abertura = datetime.strptime(
+          row["Data de Abertura"], "%Y-%m-%d"
+      ).date()
+      if row["Status"] == "PENDENTE":
+        return (hoje_calc - dt_abertura).days
+      elif row["Data de Conclusão"]:
+        dt_conc = datetime.strptime(
+            row["Data de Conclusão"][:10], "%Y-%m-%d"
+        ).date()
+        return (dt_conc - dt_abertura).days
+    except Exception:
+      return None
+    return None
+
+  df["Dias Decorridos / Resolução"] = df.apply(calcular_duracao, axis=1)
+
+  output = io.BytesIO()
+  with pd.ExcelWriter(output, engine="openpyxl") as writer:
+    df.to_excel(writer, index=False, sheet_name=titulo_aba[:30])
+  return output.getvalue()
+
+
+# ---------------------------------------------------------
+# MODAL DE EDIÇÃO
 # ---------------------------------------------------------
 @st.dialog("Editar Pendência")
 def modal_editar_pendencia(registro):
@@ -133,7 +210,9 @@ def modal_editar_pendencia(registro):
 
     col_btn1, col_btn2 = st.columns(2)
     with col_btn1:
-      salvar = st.form_submit_button("Salvar Alterações", use_container_width=True)
+      salvar = st.form_submit_button(
+          "Salvar Alterações", use_container_width=True
+      )
     with col_btn2:
       cancelar = st.form_submit_button("Cancelar", use_container_width=True)
 
@@ -159,8 +238,7 @@ def modal_editar_pendencia(registro):
 # ---------------------------------------------------------
 st.title("Painel de Controle de Pendências")
 st.caption(
-    "Controle operacional, rastreamento de tempo decorrido e gestão de"
-    " chamados."
+    "Controle operacional, rastreamento de prazos e métricas de chamados."
 )
 
 todos_dados = db.get_filtered_pendencias(status="TODOS")
@@ -169,24 +247,26 @@ hoje = date.today()
 total_abertas = sum(1 for p in todos_dados if p[7] == "PENDENTE")
 total_concluidas = sum(1 for p in todos_dados if p[7] == "CONCLUIDO")
 
-# Métricas principais
 col_m1, col_m2, col_m3 = st.columns(3)
 col_m1.metric("Pendências em Aberto", total_abertas)
 col_m2.metric("Concluídas", total_concluidas)
-col_m3.metric("Total de Registros", len(todos_dados))
+col_m3.metric("Total Geral", len(todos_dados))
 
 st.markdown("---")
 
-tab_visualizacao, tab_cadastro = st.tabs(
-    ["Consultar & Atualizar", "Nova Pendência"]
+tab_visualizacao, tab_cadastro, tab_relatorios = st.tabs(
+    ["Consultar & Atualizar", "Nova Pendência", "Exportar Relatórios"]
 )
 
+
 # ---------------------------------------------------------
-# ABA 1: CONSULTA, EDIÇÃO E STATUS
+# ABA 1: CONSULTA E AÇÕES
 # ---------------------------------------------------------
 with tab_visualizacao:
   with st.sidebar:
+    st.markdown(f"👤 Conectado como: **{st.session_state.username}**")
     st.header("Filtros de Classificação")
+
     filtro_status = st.selectbox(
         "Status", ["PENDENTE", "CONCLUIDO", "TODOS"], index=0
     )
@@ -205,6 +285,7 @@ with tab_visualizacao:
     if st.button("Encerrar Sessão", use_container_width=True):
       cookie_manager.delete("auth_session")
       st.session_state.authenticated = False
+      st.session_state.username = None
       st.rerun()
 
   registros = db.get_filtered_pendencias(
@@ -233,7 +314,6 @@ with tab_visualizacao:
       ) = reg
       data_abertura = datetime.strptime(p_abertura, "%Y-%m-%d").date()
 
-      # Cálculo de tempo decorrido / resolução
       if p_status == "PENDENTE":
         dias_decorridos = (hoje - data_abertura).days
         if dias_decorridos == 0:
@@ -284,10 +364,10 @@ with tab_visualizacao:
           st.markdown(f"**Aberto em:** {data_abertura.strftime('%d/%m/%Y')}")
           st.caption(f"⏱️ {info_tempo}")
           if p_status == "CONCLUIDO" and p_conclusao:
-            dt_conc_formatada = datetime.strptime(
+            dt_conc_fmt = datetime.strptime(
                 p_conclusao[:10], "%Y-%m-%d"
             ).strftime("%d/%m/%Y")
-            st.caption(f"🏁 **Concluído em:** {dt_conc_formatada}")
+            st.caption(f"🏁 **Concluído em:** {dt_conc_fmt}")
 
         with c_edit:
           if st.button("✏️", key=f"btn_edit_{p_id}", help="Editar pendência"):
@@ -295,8 +375,9 @@ with tab_visualizacao:
 
         st.divider()
 
+
 # ---------------------------------------------------------
-# ABA 2: CADASTRO COM DATA DE ABERTURA
+# ABA 2: CADASTRO
 # ---------------------------------------------------------
 with tab_cadastro:
   st.subheader("Cadastrar Nova Pendência / Chamado")
@@ -341,3 +422,52 @@ with tab_cadastro:
         )
         st.success(f"Pendência '{f_titulo}' cadastrada com sucesso.")
         st.rerun()
+
+
+# ---------------------------------------------------------
+# ABA 3: EXPORTAÇÃO EXCEL (.XLSX)
+# ---------------------------------------------------------
+with tab_relatorios:
+  st.subheader("Exportação de Dados em Excel (.xlsx)")
+  st.caption(
+      "Selecione o escopo desejado para compilar a planilha com cálculo"
+      " automático de dias decorridos."
+  )
+
+  escopo_exportacao = st.radio(
+      "Selecione os registros para exportação:",
+      [
+          "Todas as Pendências",
+          "Apenas Pendentes (Em Aberto)",
+          "Apenas Concluídas",
+      ],
+      horizontal=True,
+  )
+
+  # Mapeamento do filtro para consulta no banco
+  filtro_status_map = {
+      "Todas as Pendências": "TODOS",
+      "Apenas Pendentes (Em Aberto)": "PENDENTE",
+      "Apenas Concluídas": "CONCLUIDO",
+  }
+
+  status_selecionado = filtro_status_map[escopo_exportacao]
+  dados_exportar = db.get_filtered_pendencias(status=status_selecionado)
+
+  st.write(f"Total de registros encontrados: **{len(dados_exportar)}**")
+
+  if dados_exportar:
+    excel_bin = gerar_excel_bytes(dados_exportar, escopo_exportacao)
+    nome_arquivo = (
+        f"relatorio_pendencias_{status_selecionado.lower()}_{hoje.isoformat()}.xlsx"
+    )
+
+    st.download_button(
+        label=f"📥 Baixar Arquivo Excel ({escopo_exportacao})",
+        data=excel_bin,
+        file_name=nome_arquivo,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+  else:
+    st.warning("Não há dados disponíveis para o escopo selecionado.")
