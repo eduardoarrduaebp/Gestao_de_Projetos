@@ -21,48 +21,6 @@ db.init_db()
 # ---------------------------------------------------------
 # GERENCIADOR DE COOKIES E TOKEN MULTIUSUÁRIO
 # ---------------------------------------------------------
-def get_cookie_manager():
-  return stx.CookieManager(key="auth_cookie_manager")
-
-
-cookie_manager = get_cookie_manager()
-
-
-def generate_auth_token(username: str, expiry_timestamp: int) -> str:
-  secret = st.secrets["auth"].get("cookie_secret", "").encode()
-  payload = f"{username}:{expiry_timestamp}".encode()
-  signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
-  return f"{username}:{expiry_timestamp}:{signature}"
-
-
-def verify_auth_token(token: str) -> tuple[bool, str | None]:
-  if not token or token.count(":") != 2:
-    return False, None
-  try:
-    username, exp_str, signature = token.split(":", 2)
-    exp_timestamp = int(exp_str)
-
-    if time.time() > exp_timestamp:
-      return False, None
-
-    users_dict = st.secrets.get("users", {})
-    if username not in users_dict:
-      return False, None
-
-    expected_token = generate_auth_token(username, exp_timestamp)
-    if hmac.compare_digest(token, expected_token):
-      return True, username
-    return False, None
-  except Exception:
-    return False, None
-
-
-# ---------------------------------------------------------
-# AUTENTICAÇÃO
-# ---------------------------------------------------------
-# ---------------------------------------------------------
-# GERENCIADOR DE COOKIES E TOKEN
-# ---------------------------------------------------------
 @st.cache_resource
 def get_cookie_manager():
   return stx.CookieManager()
@@ -72,13 +30,15 @@ cookie_manager = get_cookie_manager()
 
 
 def generate_auth_token(username: str, expiry_timestamp: int) -> str:
-  secret = st.secrets["auth"].get("cookie_secret", "fallback_secret").encode()
+  """Gera token no formato: <username>:<timestamp_expiracao>:<assinatura_hmac>"""
+  secret = st.secrets["auth"].get("cookie_secret", "").encode()
   payload = f"{username}:{expiry_timestamp}".encode()
   signature = hmac.new(secret, payload, hashlib.sha256).hexdigest()
   return f"{username}:{expiry_timestamp}:{signature}"
 
 
 def verify_auth_token(token: str) -> tuple[bool, str | None]:
+  """Valida autenticidade do HMAC, integridade e prazo de expiração."""
   if not token or token.count(":") != 2:
     return False, None
   try:
@@ -101,7 +61,7 @@ def verify_auth_token(token: str) -> tuple[bool, str | None]:
 
 
 # ---------------------------------------------------------
-# AUTENTICAÇÃO CORRIGIDA
+# AUTENTICAÇÃO E CONTROLE DE ACESSO
 # ---------------------------------------------------------
 def check_password() -> bool:
   if (
@@ -119,16 +79,13 @@ def check_password() -> bool:
     st.session_state.authenticated = False
     st.session_state.username = None
 
-  # 1. Se já autenticado na sessão ativa da memória
+  # 1. Validação via Session State
   if st.session_state.authenticated:
     return True
 
-  # 2. Leitura persistente de Cookies com tratamento de atraso
+  # 2. Leitura persistente de Cookies
   cookies = cookie_manager.get_all()
-
-  # Se o componente ainda está carregando no primeiro ciclo
   if cookies is None:
-    # Renderiza um placeholder temporário para aguardar o handshake do cookie no navegador
     time.sleep(0.1)
     return False
 
@@ -165,20 +122,30 @@ def check_password() -> bool:
           if manter_conectado:
             exp_timestamp = int(time.time() + (30 * 86400))
             token = generate_auth_token(usuario_input, exp_timestamp)
-
-            # Grava o cookie e aguarda 0.6s para garantir a escrita antes do rerun
             cookie_manager.set(
                 "auth_session",
                 token,
                 expires_at=datetime.fromtimestamp(exp_timestamp),
                 key="set_auth_token",
             )
-            time.sleep(0.6)
+            time.sleep(0.5)
 
           st.rerun()
         else:
           st.error("Usuário ou senha incorretos.")
   return False
+
+
+if not check_password():
+  st.stop()
+
+
+# ---------------------------------------------------------
+# DEFINIÇÃO DE PAPÉIS (RBAC) E VARIÁVEIS GLOBAIS
+# ---------------------------------------------------------
+is_admin = st.session_state.username == "admin"
+usuario_escopo = None if is_admin else st.session_state.username
+
 
 # ---------------------------------------------------------
 # GERADOR DE RELATÓRIO EXCEL
@@ -225,7 +192,7 @@ def gerar_excel_bytes(dados: list, titulo_aba: str) -> bytes:
 
 
 # ---------------------------------------------------------
-# MODAL DE EDIÇÃO
+# MODAL DE EDIÇÃO E EXCLUSÃO
 # ---------------------------------------------------------
 @st.dialog("Gerenciar Pendência")
 def modal_editar_pendencia(registro):
@@ -280,7 +247,6 @@ def modal_editar_pendencia(registro):
 
   st.markdown("---")
 
-  # Zona de Exclusão com confirmação explícita
   with st.expander("🗑️ Excluir Registro", expanded=False):
     st.warning(
         "Atenção: A exclusão é permanente e não poderá ser desfeita.", icon="⚠️"
@@ -314,7 +280,6 @@ st.caption(
     else f"Painel de Chamados Pessoais — {st.session_state.username}"
 )
 
-# Métricas calculadas estritamente sob o escopo do usuário
 dados_escopo = db.get_filtered_pendencias(
     status="TODOS", usuario=usuario_escopo
 )
@@ -362,7 +327,6 @@ with tab_visualizacao:
         ["TODOS"] + db.get_distinct_values("campanha", usuario=usuario_escopo),
     )
 
-    # Filtro exclusivo para o perfil Admin
     if is_admin:
       usuarios_disponiveis = ["TODOS"] + db.get_distinct_values("usuario")
       filtro_usuario_admin = st.selectbox(
